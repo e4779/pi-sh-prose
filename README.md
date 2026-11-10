@@ -28,11 +28,18 @@ FABRIC_SOCK был RPC к сервисам движка. Ванильная сб
 | Нужно | Тул (in-guest) | Из шелла |
 |---|---|---|
 | memory recall/expand | `memory_recall` / `memory_expand` (pi-transcript-recall) | `pi-recall '...'` (standalone, lazy-индекс) |
-| субагент | `Agent` (pi-subagents) | `pi -p '...'` (headless) |
+| субагент | `Agent` (pi-subagents) | `pit call Agent '{...}'` (через sh-bridge; `background:true` = job + wake-card) |
 | steer субагента | `steer_subagent` | — |
 | peers presence | тула pi-messenger | `peer ls` (тонкий клиент поверх его файлов) |
 | peer steer | тула pi-messenger | `peer send` → inbox-файл → получатель просыпается через `deliverAs:"steer"` |
 | MCP | — | mcporter (без изменений) |
+
+`pit call <tool> '<json>'` — универсальный вызов ЛЮБОГО тула расширения из
+шелла (per-session сокет `PI_TOOLS_SOCK`, 0600; внутри хоста это
+`ctx.executeTool` — включая tools с exposure `callable`, которых нет на
+модельной поверхности). Дети (`pi -p`, субагентные шеллы) наследуют env и
+могут делегировать так же. `pi -p` сам по себе — one-shot «новый сеанс с
+нуля», субагентом он не является.
 
 ## Установка
 
