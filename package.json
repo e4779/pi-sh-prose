@@ -1,0 +1,21 @@
+{
+  "name": "pi-sh-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "vanilla-pi shell contour: one shell tool, prose contract, bg jobs, session owner (Phase-0 port of pi-fabric-sh-tool, engine-free)",
+  "pi": {
+    "extensions": [
+      "./extensions/shell.ts",
+      "./extensions/shell-prose.ts",
+      "./extensions/shell-bg.ts",
+      "./extensions/shell-exec.ts",
+      "./extensions/session-owner.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
