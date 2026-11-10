@@ -10,7 +10,8 @@
       "./extensions/shell-prose.ts",
       "./extensions/shell-bg.ts",
       "./extensions/shell-exec.ts",
-      "./extensions/session-owner.ts"
+      "./extensions/session-owner.ts",
+      "./extensions/sh-bridge.ts"
     ]
   },
   "peerDependencies": {

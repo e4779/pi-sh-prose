@@ -1,0 +1,77 @@
+#!/usr/bin/env bun
+/**
+ * pit — shell-side client for the pi sh-bridge (extensions/sh-bridge.ts).
+ *
+ * Connects to the session's PI_TOOLS_SOCK Unix socket and prints the one-line
+ * JSON response. Works from any child of the session (shell tool, prose
+ * blocks, pi -p one-shots): the env var is inherited at spawn time.
+ *
+ *   pit call <tool> '<json>' [--bg]   call a registered tool of the host session
+ *   pit list                          names + exposure of every registered tool
+ *
+ * Exit codes: 0 ok, 1 bridge answered ok:false, 2 client/usage error.
+ * Bun built-ins only.
+ */
+import { connect } from 'node:net';
+
+const USAGE = `usage: pit call <tool> '<json>' [--bg]
+       pit list
+requires PI_TOOLS_SOCK in env (run inside a pi session carrying sh-bridge)`;
+
+/** One newline-delimited JSON round trip over the session socket. */
+function roundTrip(request: Record<string, unknown>): Promise<string> {
+  const sockPath = process.env.PI_TOOLS_SOCK;
+  if (!sockPath) {
+    return Promise.reject(new Error('PI_TOOLS_SOCK not set — no pi session host (or sh-bridge not loaded) above this process'));
+  }
+  return new Promise((resolve, reject) => {
+    const sock = connect(sockPath);
+    let buf = '';
+    const fail = (e: Error): void => {
+      sock.destroy();
+      reject(e);
+    };
+    sock.on('connect', () => sock.write(`${JSON.stringify(request)}\n`));
+    sock.on('data', (d: Buffer) => {
+      buf += d;
+      const nl = buf.indexOf('\n');
+      if (nl !== -1) {
+        const line = buf.slice(0, nl).trim();
+        sock.end();
+        resolve(line);
+      }
+    });
+    sock.on('error', (e: Error) => fail(new Error(`socket ${sockPath}: ${e.message} (host session gone?)`)));
+  });
+}
+
+async function main(): Promise<number> {
+  const argv = process.argv.slice(2);
+  const [verb, tool, argsJson] = argv;
+  try {
+    if (verb === 'list') {
+      const line = await roundTrip({ tool: '_list' });
+      const res = JSON.parse(line) as { ok?: boolean; tools?: { name: string }[]; error?: string };
+      if (res.ok !== true) {
+        process.stderr.write(`${res.error ?? line}\n`);
+        return 1;
+      }
+      process.stdout.write(`${(res.tools ?? []).map((t) => t.name).join('\n')}\n`);
+      return 0;
+    }
+    if (verb === 'call' && typeof tool === 'string') {
+      const background = argv.includes('--bg');
+      const args = argsJson === undefined || argsJson === '--bg' ? {} : JSON.parse(argsJson);
+      const line = await roundTrip({ tool, args, background });
+      process.stdout.write(`${line}\n`);
+      return (JSON.parse(line) as { ok?: boolean }).ok === true ? 0 : 1;
+    }
+  } catch (e) {
+    process.stderr.write(`pit: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 2;
+  }
+  process.stderr.write(`${USAGE}\n`);
+  return 2;
+}
+
+main().then((code) => process.exit(code));
