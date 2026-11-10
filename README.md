@@ -18,6 +18,22 @@ Shell-контур для ванильного pi **без pi-fabric**: один
   отдельными пакетами (pi-messenger, pi-transcript-recall — см. PLAN.md
   в `~/projects/pi-fresh`).
 
+## Вызов сервисов из шелл-контура
+
+FABRIC_SOCK был RPC к сервисам движка. Ванильная сборка инвертирует транспорт:
+состояние — файлы в проекте (fs = транспорт), доставка — хостовый extension API
+(`pi.sendMessage` + `deliverAs:"steer"`), вычисление — одноразовый `pi -p`.
+Каждый сервис несёт свой CLI, эргономика plain shell commands сохраняется:
+
+| Нужно | Тул (in-guest) | Из шелла |
+|---|---|---|
+| memory recall/expand | `memory_recall` / `memory_expand` (pi-transcript-recall) | `pi-recall '...'` (standalone, lazy-индекс) |
+| субагент | `Agent` (pi-subagents) | `pi -p '...'` (headless) |
+| steer субагента | `steer_subagent` | — |
+| peers presence | тула pi-messenger | `peer ls` (тонкий клиент поверх его файлов) |
+| peer steer | тула pi-messenger | `peer send` → inbox-файл → получатель просыпается через `deliverAs:"steer"` |
+| MCP | — | mcporter (без изменений) |
+
 ## Установка
 
 ```sh
