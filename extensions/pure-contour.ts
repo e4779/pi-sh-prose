@@ -52,17 +52,17 @@ const WARMUP =
 export default function (pi: ExtensionAPI): void {
   const keep = process.env.PI_SH_TOOL_KEEP_SURFACE === '1';
   const arm = process.env.PI_SH_PIT_ARM === '1';
-  const bare = process.env.PI_SH_BARE === '1'; // mini-swe-bench purity: no tool ever declared
+  const warm = process.env.PI_SH_WARM === '1'; // opt-in: cold-start anchor + pit bridge
   if (keep) return;
   pi.on('session_start', () => {
     pi.on('before_agent_start', (event: AgentStartEvent) => {
       const o = event.systemPromptOptions;
       if (!o) return;
       const cold = !isArmed();
-      o.selectedTools = arm || (cold && !bare) ? ['tools_call'] : [];
+      o.selectedTools = arm || (cold && warm) ? ['tools_call'] : [];
       if (!o.sections) o.sections = {};
       o.sections['sh-prose-contract'] = CONTRACT;
-      if (cold && !arm && !bare) o.sections['sh-bridge-warmup'] = WARMUP;
+      if (cold && warm && !arm) o.sections['sh-bridge-warmup'] = WARMUP;
     });
   });
 }

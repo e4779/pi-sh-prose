@@ -258,9 +258,9 @@ export default function (pi: ExtensionAPI) {
         }
         return;
       }
-      if (process.env.PI_SH_BARE === '1') {
+      if (process.env.PI_SH_WARM !== '1') {
         try {
-          ctx.ui?.notify?.('bare contour: bridge stays cold by design (PI_SH_BARE) — spawn without it to use pit', 'info');
+          ctx.ui?.notify?.('bare contour: bridge stays cold by design; spawn with PI_SH_WARM=1 to use pit', 'info');
         } catch {
           /* cosmetic */
         }
