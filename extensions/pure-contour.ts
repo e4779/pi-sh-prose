@@ -59,10 +59,14 @@ export default function (pi: ExtensionAPI): void {
       const o = event.systemPromptOptions;
       if (!o) return;
       const cold = !isArmed();
-      o.selectedTools = arm || (cold && warm) ? ['tools_call'] : [];
+      // Self-healing warm: keep declaring the arming tool (and the anchor
+      // ask) on EVERY run until the bridge is actually armed — a missed
+      // one-shot anchor on a -c continuation used to leave the session
+      // cold forever with no way back in.
+      o.selectedTools = arm || (warm && !isArmed()) ? ['tools_call'] : [];
       if (!o.sections) o.sections = {};
       o.sections['sh-prose-contract'] = CONTRACT;
-      if (cold && warm && !arm) o.sections['bus-warmup'] = WARMUP;
+      if (warm && !arm && !isArmed()) o.sections['bus-warmup'] = WARMUP;
     });
   });
 }
