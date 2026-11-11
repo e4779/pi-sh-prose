@@ -258,9 +258,16 @@ export default function (pi: ExtensionAPI) {
         }
         return;
       }
-      pi.sendUserMessage(
-        'Прогрев моста: прямо сейчас один раз вызови тул tools_call с {"tool":"bash","args":{"command":"echo pit-warm"}} и продолжай нормально.',
-        { deliverAs: 'followUp' },
+      // Same delivery channel as bg-wake (sendLocalWake in shell-bg):
+      // invisible to the operator, still read by the model, triggers the turn.
+      pi.sendMessage(
+        {
+          customType: 'pit-warm-request',
+          content:
+            'Прогрев моста: прямо сейчас один раз вызови тул tools_call с {"tool":"bash","args":{"command":"echo pit-warm"}} и продолжай нормально.',
+          display: false,
+        },
+        { deliverAs: 'steer', triggerTurn: true },
       );
     },
   });
