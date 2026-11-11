@@ -1,0 +1,313 @@
+#!/usr/bin/env bun
+/**
+ * pbus — the single client of the session bus (extensions/bus.ts).
+ * One socket (PI_BUS_SOCK), two services:
+ *   tools   {"tool","args"}     → executeTool registry (arming-gated)
+ *   agents  {"method","params"} → pi-subagents event-bus RPC (no arming)
+ *
+ *   pbus                            computed help: live tools + methods
+ *   pbus list | describe <tool>     tools service
+ *   pbus call <tool> [--k=v|json] [--bg]
+ *   pbus rpc <method> [json]        GENERIC: any bus method, current or future
+ *   pbus agents list                persona scan (fs projection of discovery roots)
+ *   pbus agents spawn <agent> [task|-] [--bg] [--raw] [--timeout=sec]
+ *   pbus agents steer|status|stop|resume <id> [msg…]
+ *   pbus agents cost
+ *
+ * Task pipes into spawn when omitted or '-': cat spec.md | pbus agents spawn researcher -
+ * Exit codes: 0 ok · 1 failed/stopped or bus ok:false · 2 usage/client · 3 timeout.
+ * Bun built-ins only.
+ */
+import { connect } from 'node:net';
+import { readFileSync, readdirSync } from 'node:fs';
+import { isatty } from 'node:tty';
+import { join, basename } from 'node:path';
+import { homedir } from 'node:os';
+
+const USAGE = `usage: pbus                            computed help (live tools + methods)
+       pbus list                        every registered tool, one line each
+       pbus describe <tool>             full parameters of one tool
+       pbus call <tool> [--k=v …] ['<json>'] [--bg]
+       pbus rpc <method> ['<json>']     generic bus method escape hatch
+       pbus agents list                 personas from discovery roots (projection)
+       pbus agents spawn <agent> [task|-] [--bg] [--raw] [--timeout=sec]
+       pbus agents steer|stop|resume <id> <msg…>
+       pbus agents status <id>
+       pbus agents cost
+requires PI_BUS_SOCK in env (any child of a pi session carrying the bus)`;
+
+/** One NDJSON round trip over the session bus socket, parsed as JSON. */
+function roundTrip(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const sockPath = process.env.PI_BUS_SOCK;
+  if (!sockPath) return Promise.reject(new Error('PI_BUS_SOCK not set — no pi session host (or bus extension not loaded) above this process'));
+  return new Promise((resolve, reject) => {
+    const sock = connect(sockPath);
+    let buf = '';
+    const fail = (e: Error): void => { sock.destroy(); reject(e); };
+    sock.on('connect', () => sock.write(`${JSON.stringify(request)}\n`));
+    sock.on('data', (d: Buffer) => {
+      buf += d;
+      const nl = buf.indexOf('\n');
+      if (nl !== -1) {
+        const line = buf.slice(0, nl).trim();
+        sock.end();
+        try { resolve(JSON.parse(line)); } catch { fail(new Error(`bad reply: ${line.slice(0, 200)}`)); }
+      }
+    });
+    sock.on('error', (e: Error) => fail(new Error(`bus socket ${sockPath}: ${e.message} (host session gone? mixed versions fail loud)`)));
+  });
+}
+
+async function bus(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const env = await roundTrip({ method, params });
+  if (env.ok !== true) throw new Error(String(env.error ?? `rpc ${method} failed`));
+  return env;
+}
+
+// ---------- tools service (list / describe / call) ----------
+
+interface ToolDef { name?: string; exposure?: string; description?: string; parameters?: { properties?: Record<string, Record<string, unknown>>; required?: string[] } }
+
+const typeOf = (s: Record<string, unknown> | undefined): string => {
+  if (!s || typeof s !== 'object') return '?';
+  if (Array.isArray(s.type)) return (s.type as string[]).join('|');
+  if (typeof s.type === 'string') return s.type;
+  if (Array.isArray(s.anyOf)) return (s.anyOf as Record<string, unknown>[]).map((v) => typeOf(v as Record<string, unknown>)).join('|');
+  return '?';
+};
+
+const wrap = (text: string, indent = '    '): string => {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ');
+  const lines: string[] = [];
+  let line = '';
+  for (const w of words) {
+    if (line && line.length + 1 + w.length > 78 - indent.length) { lines.push(line); line = w; }
+    else line = line ? `${line} ${w}` : w;
+  }
+  if (line) lines.push(line);
+  return lines.map((l) => indent + l).join('\n');
+};
+
+async function fetchTools(): Promise<ToolDef[]> {
+  const res = (await roundTrip({ tool: '_list' })) as { ok?: boolean; tools?: ToolDef[]; error?: string };
+  if (res.ok !== true) throw new Error(String(res.error ?? 'list failed'));
+  return res.tools ?? [];
+}
+
+function printTools(tools: ToolDef[]): void {
+  for (const t of tools) {
+    const first = (t.description ?? '').split(/[.\n]/)[0].trim();
+    process.stdout.write(`${t.name ?? '?'} [${t.exposure ?? 'direct'}]${first ? ` — ${first}` : ''}\n`);
+  }
+}
+
+function printTool(t: ToolDef): void {
+  const out: string[] = [`name: ${t.name ?? '?'}`, `exposure: ${t.exposure ?? 'direct'}`, 'description:'];
+  out.push(wrap(t.description ?? '(none)'));
+  const props = t.parameters?.properties ?? {};
+  const required = new Set(t.parameters?.required ?? []);
+  out.push('parameters:');
+  const names = Object.keys(props);
+  if (names.length === 0) out.push('    (none — call with {} as args)');
+  for (const n of names.sort()) {
+    const p = props[n] ?? {};
+    const bits: string[] = [];
+    const ty = typeOf(p);
+    if (ty !== '?') bits.push(ty);
+    bits.push(required.has(n) ? 'required' : 'optional');
+    if (Array.isArray(p.enum)) bits.push(`enum: ${(p.enum as string[]).join('|')}`);
+    const d = typeof p.description === 'string' ? p.description : '';
+    out.push(`  --${n} (${bits.join(', ')})${d ? ` — ${d}` : ''}`);
+  }
+  process.stdout.write(`${out.join('\n')}\n`);
+}
+
+// ---------- agents service (rpc sugar + persona scan) ----------
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+
+function huntRun(reply: unknown): { runId?: string; asyncDir?: string } {
+  const s = JSON.stringify(reply) ?? '';
+  const asyncDir = s.match(/\/tmp\/pi-subagents-uid-\d+\/async-subagent-runs\/[0-9a-f-]{36}/)?.[0];
+  const runId = asyncDir?.slice(asyncDir.length - 36) ?? s.match(UUID)?.[0];
+  return runId || asyncDir ? { runId, asyncDir } : {};
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+async function waitTerminal(asyncDir: string, timeoutMs: number): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const st = JSON.parse(readFileSync(join(asyncDir, 'status.json'), 'utf8')) as Record<string, unknown>;
+      const state = String(st.state ?? '');
+      if (state && !['queued', 'running', 'pending'].includes(state)) return st;
+    } catch { /* dir or status.json not there yet */ }
+    if (Date.now() > deadline) throw new Error(`timeout waiting for ${asyncDir} (--timeout=<sec>)`);
+    await sleep(2000);
+  }
+}
+
+function runOutput(asyncDir: string, raw: boolean): string {
+  if (!raw) {
+    try {
+      const log = readdirSync(asyncDir).find((f) => /^subagent-log-.*\.md$/.test(f));
+      if (log) {
+        const body = (readFileSync(join(asyncDir, log), 'utf8').split('## Summary')[1] ?? '').split('\n');
+        while (body.length && !body[0].trim()) body.shift();
+        body.shift(); // "<agent>:" header line
+        const out = body.join('\n').trim();
+        if (out) return out;
+      }
+    } catch { /* fall through */ }
+  }
+  try { return readFileSync(join(asyncDir, 'output-0.log'), 'utf8').trim(); } catch { return '(no output artifact found)'; }
+}
+
+function readTask(words: string[]): string {
+  if (words.length === 0 || (words.length === 1 && words[0] === '-')) {
+    if (isatty(0)) throw new Error('no task: pass it as arguments or pipe stdin');
+    return readFileSync(0, 'utf8');
+  }
+  return words.join(' ');
+}
+
+/** Persona scan — fs PROJECTION of pi-subagents discovery (project > user > package). */
+function scanAgents(): { name: string; source: string; desc: string }[] {
+  const out: { name: string; source: string; desc: string }[] = [];
+  const seen = new Set<string>();
+  const roots: [string, string][] = [
+    [join(process.cwd(), '.pi/agents'), 'project'],
+    [join(process.cwd(), '.agents'), 'project-legacy'],
+    [join(homedir(), '.pi/agents'), 'user'],
+    [join(homedir(), '.pi/agent/npm/node_modules/pi-subagents/agents'), 'package'],
+  ];
+  for (const [root, source] of roots) {
+    let files: string[] = [];
+    try {
+      files = readdirSync(root, { recursive: true }).map(String).filter((f) => f.endsWith('.md'));
+    } catch { continue; }
+    for (const f of files) {
+      try {
+        const md = readFileSync(join(root, f), 'utf8');
+        const fm = md.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? '';
+        const name = fm.match(/^name:\s*(.+)$/m)?.[1]?.trim() ?? basename(f, '.md');
+        if (seen.has(name)) continue;
+        seen.add(name);
+        out.push({ name, source, desc: (fm.match(/^description:\s*(.+)$/m)?.[1] ?? '').trim() });
+      } catch { /* skip unreadable */ }
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const printData = (env: Record<string, unknown>): void => console.log(JSON.stringify(env.data ?? env, null, 2));
+
+// ---------- computed help ----------
+
+async function computedHelp(): Promise<number> {
+  process.stdout.write(`${USAGE}\n`);
+  try {
+    const tools = await fetchTools();
+    const ping = await bus('ping', {});
+    const caps = (ping.data ?? {}) as { methods?: string[] };
+    process.stdout.write(`\nlive: ${tools.length} tools on the registry; agents methods: ${(caps.methods ?? []).join(', ')}\n`);
+    process.stdout.write('pbus list / pbus describe — tools; pbus agents list — personas.\n');
+  } catch { /* offline: usage skeleton is enough */ }
+  return 0;
+}
+
+// ---------- main ----------
+
+async function main(): Promise<number> {
+  const argv = process.argv.slice(2);
+  const [family, sub] = argv;
+
+  if (!family) return computedHelp();
+
+  if (family === 'list') { printTools(await fetchTools()); return 0; }
+
+  if (family === 'describe' && typeof sub === 'string') {
+    const t = (await fetchTools()).find((x) => x.name === sub);
+    if (!t) { process.stderr.write(`pbus: no registered tool named "${sub}" (see pbus list)\n`); return 2; }
+    printTool(t);
+    return 0;
+  }
+
+  if (family === 'call' && typeof sub === 'string') {
+    const args: Record<string, unknown> = {};
+    let background = false;
+    for (const a of argv.slice(2)) {
+      if (a === '--bg') background = true;
+      else if (a.startsWith('--') && a.includes('=')) {
+        const eq = a.indexOf('=');
+        const key = a.slice(2, eq);
+        let value: unknown;
+        try { value = JSON.parse(a.slice(eq + 1)); } catch { value = a.slice(eq + 1); }
+        args[key] = value;
+      } else if (a.startsWith('{')) Object.assign(args, JSON.parse(a) as Record<string, unknown>);
+      else throw new Error(`unrecognized argument: ${a}`);
+    }
+    const env = await roundTrip({ tool: sub, args, background });
+    process.stdout.write(`${JSON.stringify(env)}\n`);
+    return env.ok === true ? 0 : 1;
+  }
+
+  if (family === 'rpc' && typeof sub === 'string') {
+    const blob = argv[2];
+    const params = blob ? (JSON.parse(blob) as Record<string, unknown>) : {};
+    const env = await bus(sub, params);
+    printData(env);
+    return 0;
+  }
+
+  if (family === 'agents') {
+    if (sub === 'list') {
+      for (const a of scanAgents()) process.stdout.write(`${a.name} [${a.source}]${a.desc ? ` — ${a.desc.split(/[.\n]/)[0].trim()}` : ''}\n`);
+      return 0;
+    }
+    if (sub === 'cost') { printData(await bus('cost', {})); return 0; }
+    if (sub === 'ping') { printData(await bus('ping', {})); return 0; }
+    if (sub === 'status' && argv[2]) { printData(await bus('status', { runId: argv[2] })); return 0; }
+    if ((sub === 'steer' || sub === 'resume') && argv[2] && argv[3]) {
+      printData(await bus(sub, { runId: argv[2], message: argv.slice(3).join(' ') }));
+      return 0;
+    }
+    if (sub === 'stop' && argv[2]) { printData(await bus('stop', { runId: argv[2] })); return 0; }
+
+    if (sub === 'spawn' && argv[2]) {
+      let bg = false; let raw = false; let timeoutSec = 1800;
+      const pos: string[] = [];
+      for (const a of argv.slice(3)) {
+        if (a === '--bg' || a === '-b') bg = true;
+        else if (a === '--raw') raw = true;
+        else if (a.startsWith('--timeout=')) timeoutSec = Number(a.slice(10)) || 1800;
+        else pos.push(a);
+      }
+      const agent = argv[2];
+      const task = readTask(pos);
+      const env = await bus('spawn', { agent, task });
+      const { runId, asyncDir } = huntRun(env);
+      if (bg || !runId) {
+        printData(env);
+        if (!runId && !bg) process.stderr.write('warning: no runId in the spawn reply — run may have failed to start\n');
+        return runId || bg ? 0 : 2;
+      }
+      const dir = asyncDir ?? `/tmp/pi-subagents-uid-${process.getuid()}/async-subagent-runs/${runId}`;
+      process.stderr.write(`pbus: ${agent} → ${runId} (waiting, state poll 2s)\n`);
+      let st: Record<string, unknown>;
+      try { st = await waitTerminal(dir, timeoutSec * 1000); } catch (e) { process.stderr.write(`${(e as Error).message}\n`); return 3; }
+      process.stderr.write(`pbus: ${String(st.state ?? '?')}\n`);
+      console.log(runOutput(dir, raw));
+      return st.state === 'complete' ? 0 : 1;
+    }
+  }
+
+  process.stderr.write(`${USAGE}\n`);
+  return 2;
+}
+
+main().then(
+  (code) => process.exit(code),
+  (e) => { process.stderr.write(`pbus: ${(e as Error).message}\n\n${USAGE}\n`); process.exit(2); },
+);

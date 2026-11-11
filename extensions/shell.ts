@@ -61,7 +61,7 @@ import {
 // other card builders in shell-prose.ts; registering it here too covers the
 // tool arm (PI_SHELL_PROSE off/soft) — map-set, idempotent across arms.
 import { registerBgEventRenderer } from './shell-prose.ts';
-import { armFromExecute } from './sh-bridge.ts';
+import { armFromExecute } from './bus.ts';
 
 // ---- call telemetry ---------------------------------------------------------
 

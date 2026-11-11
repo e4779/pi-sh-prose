@@ -1,5 +1,5 @@
 /**
- * sh-bridge — call ANY registered tool of this session from the shell side
+ * bus — the session bus: call ANY registered tool of this session from the shell side
  * (Phase-0 tail, PLAN.md Ф0 in ~/projects/pi-fresh). The engine-free
  * replacement for fabric's FABRIC_SOCK tool delegation.
  *
@@ -7,10 +7,10 @@
  *   - the `tools_call` tool (model-facing): delegates to any other tool via
  *     ctx.executeTool — including tools with codemode/deferred exposure that
  *     never appear on the model surface;
- *   - a per-session Unix socket exported to child env as PI_TOOLS_SOCK:
+ *   - a per-session Unix socket exported to child env as PI_BUS_SOCK:
  *     newline-delimited JSON, one request {"tool", "args", "background"} →
- *     one response {"ok", ...result|error}. The `pit` CLI (bin/pit) is the
- *     shell-side client; children (pi -p, subagent shells) inherit the env
+ *     one response {"ok", ...result|error}. The `pbus` CLI (bin/pbus) is
+ *     the shell-side client; children (subagent shells) inherit the env
  *     var and delegate the same way.
  *
  * ARMING (host API constraint, verified against pi 1.5.0): executeTool
@@ -32,8 +32,8 @@
  *
  * A third wire verb {"method","params"} forwards to the pi-subagents
  * event-bus RPC (subagents:rpc:v1:*: spawn/steer/status/stop/resume/cost).
- * It needs NO arming: the bus answers from session_start. The pi-run CLI
- * (bin/pi-run) is its shell-side client — the unix door to subagents.
+ * It needs NO arming: the bus answers from session_start. Its client is
+ * `pbus agents …` (bin/pbus) — the unix door to subagents.
  */
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -44,7 +44,7 @@ import { join } from 'node:path';
 import { bindBg, bgTail, registerBgJob, setBgOwnerSession, wakeSession, type BgJob } from './shell-bg.ts';
 
 /** Socket directory, one socket per session id (mirrors session-owner's pi-owners). */
-export const SOCK_DIR = join(process.env.XDG_RUNTIME_DIR || '/tmp', 'pi-tools');
+export const SOCK_DIR = join(process.env.XDG_RUNTIME_DIR || '/tmp', 'pi-bus');
 /** Pseudo-tool name the socket serves tool listings under (keeps the wire protocol untouched). */
 export const LIST_TOOL = '_list';
 
@@ -57,7 +57,7 @@ let uiStatus: { setStatus?: (key: string, value: string | undefined) => void } |
 
 const refreshStatus = (): void => {
   try {
-    uiStatus?.setStatus?.('pit', armed ? '⇅ pit' : '· pit');
+      uiStatus?.setStatus?.('pbus', armed ? '⇅ pbus' : '· pbus');
   } catch {
     /* footer is cosmetic: never fail arming on it */
   }
@@ -253,9 +253,9 @@ const startServer = (pi: ExtensionAPI, sid: string | null): void => {
     server = createServer(handleConn);
     server.listen(sockPath);
     chmodSync(sockPath, 0o600); // session-private: only this user's children
-    process.env.PI_TOOLS_SOCK = sockPath; // children inherit at spawn time
+    process.env.PI_BUS_SOCK = sockPath; // children inherit at spawn time
   } catch (e) {
-    process.stderr.write(`sh-bridge: socket unavailable (${(e as Error).message}) — pit calls disabled, tools_call still works\n`);
+    process.stderr.write(`bus: socket unavailable (${(e as Error).message}) — pbus calls disabled, tools_call still works\n`);
     server = undefined;
     sockPath = undefined;
   }
@@ -274,7 +274,7 @@ const stopServer = (): void => {
     } catch {
       /* already gone */
     }
-    if (process.env.PI_TOOLS_SOCK === sockPath) delete process.env.PI_TOOLS_SOCK;
+    if (process.env.PI_BUS_SOCK === sockPath) delete process.env.PI_BUS_SOCK;
     sockPath = undefined;
   }
   setArmed(undefined);
@@ -291,7 +291,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on('session_shutdown', () => stopServer());
 
-  pi.registerCommand('pit-warm', {
+  pi.registerCommand('bus-warm', {
     description: 'Warm the pit bridge: the next run declares the tools_call anchor once (the pure contour does this automatically while the bridge is cold)',
     handler: async (ctx) => {
       if (isArmed()) {
@@ -314,9 +314,9 @@ export default function (pi: ExtensionAPI) {
       // invisible to the operator, still read by the model, triggers the turn.
       pi.sendMessage(
         {
-          customType: 'pit-warm-request',
+          customType: 'bus-warm-request',
           content:
-            'Прогрев моста: прямо сейчас один раз вызови тул tools_call с {"tool":"bash","args":{"command":"echo pit-warm"}} и продолжай нормально.',
+            'Прогрев моста: прямо сейчас один раз вызови тул tools_call с {"tool":"bash","args":{"command":"echo bus-warm"}} и продолжай нормально.',
           display: false,
         },
         { deliverAs: 'steer', triggerTurn: true },
@@ -331,7 +331,7 @@ export default function (pi: ExtensionAPI) {
     description:
       'Call any registered tool of this session by name (including tools not on your surface, ' +
       'like codemode/deferred ones). Also the arming surface for the pit CLI: child processes ' +
-      'reach this bridge through the PI_TOOLS_SOCK socket, which borrows the executeTool handle ' +
+      'reach this bridge through the PI_BUS_SOCK socket, which borrows the executeTool handle ' +
       'captured by THIS tool\'s execution — so a session where tools_call never ran cannot serve ' +
       'pit calls. background:true returns a job handle at once and wakes this session on completion.',
     parameters: Type.Object({

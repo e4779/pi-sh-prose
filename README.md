@@ -1,13 +1,13 @@
 # pi-sh-tool
 
-Shell-контур для ванильного pi **без pi-fabric**: один тул `shell`, prose-контракт
-исполнения (four-backtick `sh` блок последним в сообщении), auto-detach долгих
-команд в фон, session-owner gate. Порт `pi-fabric-sh-tool`, из которого вырезана
-движковая зависимость.
+Shell-контур для ванильного pi **без pi-fabric**: prose-контракт исполнения
+(four-backtick `sh` блок последним в сообщении), auto-detach долгих команд в
+фон, session-owner gate, сессионная шина `pbus`. Порт `pi-fabric-sh-tool`,
+из которого вырезана движковая зависимость.
 
 ## Отличия от pi-fabric-sh-tool
 
-- Ноль зависимости от pi-fabric: тул регистрируется через `pi.registerTool`
+- Ноль зависимости от pi-fabric: тулы регистрируются через `pi.registerTool`
   на ванильном хосте; `pi-fabric/highlight` заменён на plain-text стаб
   (`extensions/highlight-stub.ts`).
 - Gate — минимальный fallback (`bash --norc -n` parse check + pass-through
@@ -22,53 +22,51 @@ Shell-контур для ванильного pi **без pi-fabric**: один
 
 FABRIC_SOCK был RPC к сервисам движка. Ванильная сборка инвертирует транспорт:
 состояние — файлы в проекте (fs = транспорт), доставка — хостовый extension API
-(`pi.sendMessage` + `deliverAs:"steer"`), вычисление — одноразовый `pi -p`.
-Каждый сервис несёт свой CLI, эргономика plain shell commands сохраняется:
+(`pi.sendMessage` + `deliverAs:"steer"`), вычисление — шина сессии. Каждый
+сервис несёт свой CLI, эргономика plain shell commands сохраняется:
 
 | Нужно | Тул (in-guest) | Из шелла |
 |---|---|---|
 | memory recall/expand | `memory_recall` / `memory_expand` (pi-transcript-recall) | `pi-recall '...'` (standalone, lazy-индекс) |
-| субагент | `Agent` (pi-subagents) | `pit call Agent '{...}'` (через sh-bridge; `background:true` = job + wake-card) |
-| steer субагента | `steer_subagent` | — |
+| субагент | `Agent` (pi-subagents) | `pbus agents spawn <agent> '<task>'` (`--bg` = хендл + wake) |
+| steer субагента | `steer_subagent` | `pbus agents steer <id> '<msg>'` |
 | peers presence | тула pi-messenger | `peer ls` (тонкий клиент поверх его файлов) |
 | peer steer | тула pi-messenger | `peer send` → inbox-файл → получатель просыпается через `deliverAs:"steer"` |
 | MCP | — | mcporter (без изменений) |
 
-`pit call <tool> [--key=value ...] ['<json>']` — универсальный вызов ЛЮБОГО тула
-расширения из шелла. Мост самопрогревается: пока холоден, первый ход сессии
-несёт единственный якорь (`tools_call` + строка инструкции в промпте) — модель
-вызывает его внутри своего первого ответа, и поверхность возвращается к строгому
-нулю. `/pit-warm` — ручной прогрев по команде; футер показывает связь:
-`⇅ pit` (вооружён) / `· pit` (холоден). По умолчанию контур bare — ни одного
-тулового хода с первого хода (мост холоден навсегда, `/pit-warm` объясняет);
-память — шелл-командой `pi-recall`. Режимы: `PI_SH_WARM=1` — прогревочный
-якорь на первом ходу + мост для pit; `PI_SH_PIT_ARM=1` — якорь на каждом ходу;
-`PI_SH_TOOL_KEEP_SURFACE=1` — смешанная поверхность без редукции.
-шелла (per-session сокет `PI_TOOLS_SOCK`, 0600; внутри хоста это
-`ctx.executeTool` — включая tools с exposure `callable`, которых нет на
-модельной поверхности). Дети (`pi -p`, субагентные шеллы) наследуют env и
-могут делегировать так же. `pi -p` сам по себе — one-shot «новый сеанс с
-нуля», субагентом он не является.
+Сервис tools шины вооружается первым `tools_call` (ограничение API хоста):
+до него `pbus call` отвечает actionable-ошибкой, а `pbus list/describe`
+работают всегда. Дети наследуют env и ездят той же шиной. По умолчанию контур
+bare — ноль туловых ходов с первого хода; режимы: `PI_SH_WARM=1` —
+прогревочный якорь + мост; `PI_SH_BUS_ARM=1` — якорь на каждом ходу;
+`PI_SH_TOOL_KEEP_SURFACE=1` — смешанная поверхность. `/bus-warm` — ручной
+прогрев; футер: `⇅ pbus` (вооружён) / `· pbus` (холоден). Память — `pi-recall`.
+`pi -p` — антипаттерн-зонд, не механизм.
 
-## pi-run — unix-дверь к субагентам
+## pbus — единый клиент шины
 
-`bin/pi-run` — пайпабельная команда: глагол `{"method","params"}` в сокет
-моста (`PI_TOOLS_SOCK`) → официальный event-bus RPC pi-subagents
-(`subagents:rpc:v1:*`: spawn/steer/status/stop/resume/cost). Arming не нужен —
-шина отвечает с session_start. Блокирующий режим опрашивает
-`asyncDir/status.json` и печатает ответ ребёнка из summary-лога прогона.
+`bin/pbus` — один клиент, одна шина (`PI_BUS_SOCK`), два сервиса:
+tools (`{"tool","args"}` → executeTool) и agents (`{"method","params"}` →
+event-bus RPC pi-subagents, без arming). Плюс generic-люк `rpc` на любой
+метод и computed help из живого реестра.
 
 ```sh
-pi-run researcher < charter.md       # блокирующе: ответ ребёнка в stdout
-pi-run oracle 'скажи: жив'           # задача аргументом
-pi-run -b oracle 'задача'            # фон: JSON-хендл (runId, asyncDir) сразу
-pi-run status|steer|stop|resume <id> # управление прогоном
-pi-run ping                          # capabilities-проба шины
+pbus                                 # живой help: N tools + methods
+pbus list | describe <tool>          # реестр тулов (динамично)
+pbus call bash --command='echo hi'
+pbus rpc ping                        # generic: любой метод шины
+pbus agents list                     # персоны (fs-проекция discovery-корней)
+pbus agents spawn oracle 'скажи: жив'          # блокинг: ответ в stdout
+cat charter.md | pbus agents spawn researcher -
+pbus agents spawn oracle 'задача' --bg         # фон: хендл (runId, asyncDir)
+pbus agents steer|status|stop|resume <id>      # жизненный цикл прогона
+pbus agents cost
 ```
 
-Выходы: 0 complete · 1 failed/stopped · 2 usage/client · 3 timeout.
-E2E (хост `pi --mode rpc`): ping, -b, блокирующий argv+stdin оракл (8–13с),
-status — чисто; регресс pit чист.
+Выходы: 0 ok/complete · 1 failed/ok:false · 2 usage/client · 3 timeout.
+E2E (хост `pi --mode rpc`): computed help, list, rpc ping, spawn argv+stdin
+(10–24с), стабы pit/pi-run (exit 2), проектные персоны в листинге — чисто.
+`pit`/`pi-run` — stderr-стабы ≤2 недель (подскажут новое имя).
 
 ## Установка
 

@@ -12,7 +12,7 @@
       "./extensions/shell-exec.ts",
       "./extensions/session-owner.ts",
       "./extensions/pure-contour.ts",
-      "./extensions/sh-bridge.ts"
+      "./extensions/bus.ts"
     ]
   },
   "peerDependencies": {
