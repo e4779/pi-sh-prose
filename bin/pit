@@ -8,7 +8,8 @@
  *
  *   pit call <tool> [--key=value ...] ['<json>'] [--bg]
  *                                     call a registered tool of the host session
- *   pit list                          names + exposure of every registered tool
+ *   pit list                          every registered tool, one line each
+ *   pit describe <tool>               full parameters: names, types, enums, descriptions
  *
  * Flag values parse as JSON (number/bool/null) with string fallback, so
  * --pageSize=10 sends 10 and --query=gershwin sends "gershwin"; a positional
@@ -22,6 +23,7 @@ import { connect } from 'node:net';
 
 const USAGE = `usage: pit call <tool> [--key=value ...] ['<json>'] [--bg]
        pit list
+       pit describe <tool>
 requires PI_TOOLS_SOCK in env (run inside a pi session carrying sh-bridge)`;
 
 /** One newline-delimited JSON round trip over the session socket. */
@@ -51,18 +53,85 @@ function roundTrip(request: Record<string, unknown>): Promise<string> {
   });
 }
 
+/** Minimal shape of a tool definition served by _list. */
+interface ToolDef {
+  name?: string;
+  exposure?: string;
+  description?: string;
+  parameters?: { properties?: Record<string, Record<string, unknown>>; required?: string[] };
+}
+
+/** Render a TypeBox-ish schema node as a compact type string. */
+function typeOf(s: Record<string, unknown> | undefined): string {
+  if (!s || typeof s !== 'object') return '?';
+  if (Array.isArray(s.type)) return (s.type as string[]).join('|');
+  if (typeof s.type === 'string') return s.type;
+  if (Array.isArray(s.anyOf)) return (s.anyOf as Record<string, unknown>[]).map((v) => typeOf(v)).join('|');
+  return '?';
+}
+
+/** Wrap text to ~78 cols with an indent (description rendering). */
+function wrap(text: string, indent = '    '): string {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ');
+  const lines: string[] = [];
+  let line = '';
+  for (const w of words) {
+    if (line && line.length + 1 + w.length > 78 - indent.length) {
+      lines.push(line);
+      line = w;
+    } else line = line ? `${line} ${w}` : w;
+  }
+  if (line) lines.push(line);
+  return lines.map((l) => indent + l).join('\n');
+}
+
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   const [verb, tool] = argv;
   try {
     if (verb === 'list') {
       const line = await roundTrip({ tool: '_list' });
-      const res = JSON.parse(line) as { ok?: boolean; tools?: { name: string }[]; error?: string };
+      const res = JSON.parse(line) as { ok?: boolean; tools?: ToolDef[]; error?: string };
       if (res.ok !== true) {
         process.stderr.write(`${res.error ?? line}\n`);
         return 1;
       }
-      process.stdout.write(`${(res.tools ?? []).map((t) => t.name).join('\n')}\n`);
+      for (const t of res.tools ?? []) {
+        const first = (t.description ?? '').split(/[.\n]/)[0].trim();
+        process.stdout.write(`${t.name ?? '?'} [${t.exposure ?? 'direct'}]${first ? ` — ${first}` : ''}\n`);
+      }
+      return 0;
+    }
+    if (verb === 'describe' && typeof tool === 'string') {
+      const line = await roundTrip({ tool: '_list' });
+      const res = JSON.parse(line) as { ok?: boolean; tools?: ToolDef[]; error?: string };
+      if (res.ok !== true) {
+        process.stderr.write(`${res.error ?? line}\n`);
+        return 1;
+      }
+      const t = (res.tools ?? []).find((x) => x.name === tool);
+      if (!t) {
+        process.stderr.write(`pit: no registered tool named "${tool}" (see pit list)\n`);
+        return 2;
+      }
+      const out: string[] = [`name: ${t.name ?? '?'}`, `exposure: ${t.exposure ?? 'direct'}`, 'description:'];
+      out.push(wrap(t.description ?? '(none)'));
+      const props = t.parameters?.properties ?? {};
+      const required = new Set(t.parameters?.required ?? []);
+      out.push('parameters:');
+      const names = Object.keys(props);
+      if (names.length === 0) out.push('    (none — call with {} as args)');
+      for (const n of names.sort()) {
+        const p = props[n] ?? {};
+        const bits: string[] = [];
+        const ty = typeOf(p);
+        if (ty !== '?') bits.push(ty);
+        bits.push(required.has(n) ? 'required' : 'optional');
+        if (Array.isArray(p.enum)) bits.push(`enum: ${(p.enum as string[]).join('|')}`);
+        const d = typeof p.description === 'string' ? p.description : '';
+        out.push(`  --${n} (${bits.join(', ')})${d ? ` — ${d}` : ''}`);
+      }
+      process.stdout.write(`${out.join('\n')}\n`);
       return 0;
     }
     if (verb === 'call' && typeof tool === 'string') {

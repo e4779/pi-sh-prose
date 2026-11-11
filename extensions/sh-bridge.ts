@@ -114,7 +114,15 @@ async function serveRequest(req: unknown): Promise<Record<string, unknown>> {
   const { tool, args, background } = req as { tool?: unknown; args?: unknown; background?: unknown };
   if (tool === LIST_TOOL) {
     const tools = piRef?.getAllTools() ?? [];
-    return { ok: true, tools: tools.map((t) => ({ name: t.name, exposure: (t as { exposure?: string }).exposure ?? 'direct' })) };
+    return {
+      ok: true,
+      tools: tools.map((t) => ({
+        name: t.name,
+        exposure: (t as { exposure?: string }).exposure ?? 'direct',
+        description: (t as { description?: string }).description ?? '',
+        parameters: (t as { parameters?: unknown }).parameters ?? undefined,
+      })),
+    };
   }
   if (typeof tool !== 'string' || tool.length === 0) return { ok: false, error: 'bad request: "tool" must be a tool name' };
   if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args)))
