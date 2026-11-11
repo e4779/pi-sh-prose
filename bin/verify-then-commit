@@ -1,0 +1,18 @@
+#!/bin/sh
+# verify-then-commit - run the package suite, then commit.
+# The mechanical && that dogfood demanded: verification gates landings.
+# Usage: verify-then-commit -- <git-commit-args...>   (repo = this script's parent)
+set -eu
+cd "$(dirname "$0")/.."
+
+bun_bin=$(command -v bun) || { echo 'VERIFY FAILED - bun not on PATH'; exit 1; }
+
+echo "== verify: bun test (package harness)"
+if ! "$bun_bin" test >/tmp/vtc-last.log 2>&1; then
+    echo "VERIFY FAILED - nothing committed. Tail:"
+    tail -5 /tmp/vtc-last.log
+    exit 1
+fi
+tail -3 /tmp/vtc-last.log
+echo "== commit"
+exec git commit "$@"
