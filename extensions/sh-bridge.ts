@@ -46,8 +46,29 @@ type ExecuteToolFn = ExtensionToolContext['executeTool'];
 /** The borrowed nested-call handle from the last tools_call execute; undefined = unarmed. */
 let armed: ExecuteToolFn | undefined;
 
+/** Footer status surface (TUI/RPC); captured at session_start, best-effort. */
+let uiStatus: { setStatus?: (key: string, value: string | undefined) => void } | undefined;
+
+const refreshStatus = (): void => {
+  try {
+    uiStatus?.setStatus?.('pit', armed ? '⇅ pit' : '· pit');
+  } catch {
+    /* footer is cosmetic: never fail arming on it */
+  }
+};
+
+const setArmed = (fn: ExecuteToolFn | undefined): void => {
+  armed = fn;
+  refreshStatus();
+};
+
+/** Cold-bridge probe: the pure contour rides the anchor on the first run while this is false. */
+export function isArmed(): boolean {
+  return armed !== undefined;
+}
+
 export function armFromExecute(ctx: { executeTool?: ExecuteToolFn } | undefined): void {
-  if (typeof ctx?.executeTool === 'function') armed = ctx.executeTool;
+  if (typeof ctx?.executeTool === 'function') setArmed(ctx.executeTool);
 }
 
 let piRef: ExtensionAPI | undefined;
@@ -90,7 +111,8 @@ async function runArmed(
       ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
     };
   } catch (e) {
-    armed = undefined; // stale/throwing handle: force re-arm on the next execute
+    setArmed(undefined); // stale/throwing handle: force re-arm on the next execute
+    refreshStatus();
     return { ok: false, error: `bridge handle failed (${(e as Error).message}) — call tools_call once to re-arm` };
   }
 }
@@ -211,16 +233,37 @@ const stopServer = (): void => {
     if (process.env.PI_TOOLS_SOCK === sockPath) delete process.env.PI_TOOLS_SOCK;
     sockPath = undefined;
   }
-  armed = undefined;
+  setArmed(undefined);
+  refreshStatus();
 };
 
 export default function (pi: ExtensionAPI) {
   pi.on('session_start', (_event, ctx: ExtensionContext) => {
     const sid = ctx.sessionManager?.getSessionId?.() ?? null;
+    uiStatus = ctx.ui as { setStatus?: (key: string, value: string | undefined) => void } | undefined;
+    refreshStatus();
     startServer(pi, sid);
   });
 
   pi.on('session_shutdown', () => stopServer());
+
+  pi.registerCommand('pit-warm', {
+    description: 'Warm the pit bridge: the next run declares the tools_call anchor once (the pure contour does this automatically while the bridge is cold)',
+    handler: async (ctx) => {
+      if (isArmed()) {
+        try {
+          ctx.ui?.notify?.('pit bridge is already warm', 'info');
+        } catch {
+          /* cosmetic */
+        }
+        return;
+      }
+      pi.sendUserMessage(
+        'Прогрев моста: прямо сейчас один раз вызови тул tools_call с {"tool":"bash","args":{"command":"echo pit-warm"}} и продолжай нормально.',
+        { deliverAs: 'followUp' },
+      );
+    },
+  });
 
   pi.registerTool({
     name: 'tools_call',
@@ -238,9 +281,11 @@ export default function (pi: ExtensionAPI) {
       background: Type.Optional(Type.Boolean({ description: 'Detach: return a job handle now, wake this session on completion.' })),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      armed = ctx.executeTool; // latest execute wins: always the live runner's handle
+      setArmed(ctx.executeTool); // latest execute wins: always the live runner's handle
       const res = await serveRequest({ tool: params.tool, args: params.args, background: params.background });
-      const text = res.ok ? resultText({ content: res.content }) || JSON.stringify(res.content) : `error: ${res.error}`;
+      const text = res.ok
+        ? resultText({ content: res.content }) || JSON.stringify(res.content)
+        : `error: ${res.error ?? 'no reason given (nested calls can be unavailable mid-message in print mode — the bridge is armed regardless)'}`;
       return {
         content: [{ type: 'text', text: res.ok ? text || '(no output)' : text }],
         details: res as unknown as Record<string, unknown>,
