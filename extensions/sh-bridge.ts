@@ -46,6 +46,10 @@ type ExecuteToolFn = ExtensionToolContext['executeTool'];
 /** The borrowed nested-call handle from the last tools_call execute; undefined = unarmed. */
 let armed: ExecuteToolFn | undefined;
 
+export function armFromExecute(ctx: { executeTool?: ExecuteToolFn } | undefined): void {
+  if (typeof ctx?.executeTool === 'function') armed = ctx.executeTool;
+}
+
 let piRef: ExtensionAPI | undefined;
 let server: Server | undefined;
 let sockPath: string | undefined;

@@ -11,6 +11,7 @@
       "./extensions/shell-bg.ts",
       "./extensions/shell-exec.ts",
       "./extensions/session-owner.ts",
+      "./extensions/pure-contour.ts",
       "./extensions/sh-bridge.ts"
     ]
   },
