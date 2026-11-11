@@ -6,15 +6,21 @@
  * JSON response. Works from any child of the session (shell tool, prose
  * blocks, pi -p one-shots): the env var is inherited at spawn time.
  *
- *   pit call <tool> '<json>' [--bg]   call a registered tool of the host session
+ *   pit call <tool> [--key=value ...] ['<json>'] [--bg]
+ *                                     call a registered tool of the host session
  *   pit list                          names + exposure of every registered tool
+ *
+ * Flag values parse as JSON (number/bool/null) with string fallback, so
+ * --pageSize=10 sends 10 and --query=gershwin sends "gershwin"; a positional
+ * JSON blob is still accepted and merged. Output is the NDJSON envelope —
+ * compose with jq/toonq downstream.
  *
  * Exit codes: 0 ok, 1 bridge answered ok:false, 2 client/usage error.
  * Bun built-ins only.
  */
 import { connect } from 'node:net';
 
-const USAGE = `usage: pit call <tool> '<json>' [--bg]
+const USAGE = `usage: pit call <tool> [--key=value ...] ['<json>'] [--bg]
        pit list
 requires PI_TOOLS_SOCK in env (run inside a pi session carrying sh-bridge)`;
 
@@ -47,7 +53,7 @@ function roundTrip(request: Record<string, unknown>): Promise<string> {
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
-  const [verb, tool, argsJson] = argv;
+  const [verb, tool] = argv;
   try {
     if (verb === 'list') {
       const line = await roundTrip({ tool: '_list' });
@@ -60,8 +66,28 @@ async function main(): Promise<number> {
       return 0;
     }
     if (verb === 'call' && typeof tool === 'string') {
-      const background = argv.includes('--bg');
-      const args = argsJson === undefined || argsJson === '--bg' ? {} : JSON.parse(argsJson);
+      const args: Record<string, unknown> = {};
+      let background = false;
+      for (const a of argv.slice(2)) {
+        if (a === '--bg') {
+          background = true;
+        } else if (a.startsWith('--') && a.includes('=')) {
+          const eq = a.indexOf('=');
+          const key = a.slice(2, eq);
+          const raw = a.slice(eq + 1);
+          let value: unknown;
+          try {
+            value = JSON.parse(raw);
+          } catch {
+            value = raw;
+          }
+          args[key] = value;
+        } else if (a.startsWith('{')) {
+          Object.assign(args, JSON.parse(a) as Record<string, unknown>);
+        } else {
+          throw new Error(`unrecognized argument: ${a}`);
+        }
+      }
       const line = await roundTrip({ tool, args, background });
       process.stdout.write(`${line}\n`);
       return (JSON.parse(line) as { ok?: boolean }).ok === true ? 0 : 1;

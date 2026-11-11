@@ -34,7 +34,8 @@ FABRIC_SOCK был RPC к сервисам движка. Ванильная сб
 | peer steer | тула pi-messenger | `peer send` → inbox-файл → получатель просыпается через `deliverAs:"steer"` |
 | MCP | — | mcporter (без изменений) |
 
-`pit call <tool> '<json>'` — универсальный вызов ЛЮБОГО тула расширения из
+`pit call <tool> [--key=value ...] ['<json>']` — универсальный вызов ЛЮБОГО тула
+расширения из
 шелла (per-session сокет `PI_TOOLS_SOCK`, 0600; внутри хоста это
 `ctx.executeTool` — включая tools с exposure `callable`, которых нет на
 модельной поверхности). Дети (`pi -p`, субагентные шеллы) наследуют env и
