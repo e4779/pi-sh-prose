@@ -1,0 +1,175 @@
+#!/usr/bin/env bun
+/**
+ * pi-run — the unix door to pi-subagents. Speaks {"method","params"} over
+ * the session's sh-bridge socket (PI_TOOLS_SOCK) → the package's official
+ * event-bus RPC (subagents:rpc:v1:*). Pipe-friendly, no picmd, no pi -p.
+ *
+ *   pi-run <agent> [task...]      blocking: wait for the child, print its answer
+ *   pi-run -b <agent> [task...]   background: print the spawn handle JSON
+ *   pi-run status <id>            run status (reply JSON)
+ *   pi-run steer <id> <msg...>    steer a live run
+ *   pi-run stop <id>              stop a live run
+ *   pi-run resume <id> <msg...>   revive a stopped run
+ *   pi-run cost                   parent+children usage accounting
+ *   pi-run ping                   RPC capabilities probe
+ *
+ * Task comes from argv, or stdin when omitted / '-':
+ *   cat charter.md | pi-run researcher
+ *
+ * Blocking mode polls <asyncDir>/status.json (2s) and prints the child's
+ * answer from the run summary log; --raw prints the full child output log.
+ * Exit codes: 0 complete · 1 failed/stopped · 2 usage/client · 3 timeout.
+ */
+import { connect } from 'node:net';
+import { readFileSync, readdirSync } from 'node:fs';
+import { isatty } from 'node:tty';
+import { join } from 'node:path';
+
+const USAGE = `usage: pi-run <agent> [task...]        blocking child run; prints its answer
+       pi-run -b <agent> [task...]      background: print the spawn handle JSON
+       pi-run status <id>               run status (reply JSON)
+       pi-run steer <id> <msg...>       steer a live run
+       pi-run stop <id>                 stop a live run
+       pi-run resume <id> <msg...>      revive a stopped run
+       pi-run cost                      parent+children usage
+       pi-run ping                      RPC capabilities
+task from stdin when omitted or '-' (cat spec.md | pi-run researcher)
+flags: --timeout=<sec> (blocking wait, default 1800) · --raw (full child log)
+requires PI_TOOLS_SOCK in env (any child of a pi session carrying sh-bridge)`;
+
+/** One NDJSON round trip over the session socket, parsed as JSON. */
+function roundTrip(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const sockPath = process.env.PI_TOOLS_SOCK;
+  if (!sockPath) return Promise.reject(new Error('PI_TOOLS_SOCK not set — run inside a pi session carrying sh-bridge'));
+  return new Promise((resolve, reject) => {
+    const sock = connect(sockPath);
+    let buf = '';
+    const fail = (e: Error): void => { sock.destroy(); reject(e); };
+    sock.on('connect', () => sock.write(`${JSON.stringify(request)}\n`));
+    sock.on('data', (d: Buffer) => {
+      buf += d;
+      const nl = buf.indexOf('\n');
+      if (nl !== -1) {
+        const line = buf.slice(0, nl).trim();
+        sock.end();
+        try { resolve(JSON.parse(line)); } catch (e) { fail(new Error(`bad reply: ${line.slice(0, 200)}`)); }
+      }
+    });
+    sock.on('error', (e: Error) => fail(new Error(`socket ${sockPath}: ${e.message} (host session gone?)`)));
+  });
+}
+
+async function callRpc(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const env = await roundTrip({ method, params });
+  if (env.ok !== true) throw new Error(String(env.error ?? `rpc ${method} failed`));
+  return env;
+}
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;
+
+/** Tolerant spawn-reply scan: find the asyncDir/runId wherever the executor put them. */
+function huntRun(reply: unknown): { runId?: string; asyncDir?: string } {
+  const s = JSON.stringify(reply) ?? '';
+  const asyncDir = s.match(/\/tmp\/pi-subagents-uid-\d+\/async-subagent-runs\/[0-9a-f-]{36}/)?.[0];
+  const runId = asyncDir?.slice(asyncDir.length - 36) ?? s.match(UUID)?.[0];
+  return runId || asyncDir ? { runId, asyncDir } : {};
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Poll <asyncDir>/status.json until the run leaves queued/running/pending. */
+async function waitTerminal(asyncDir: string, timeoutMs: number): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const st = JSON.parse(readFileSync(join(asyncDir, 'status.json'), 'utf8')) as Record<string, unknown>;
+      const state = String(st.state ?? '');
+      if (state && !['queued', 'running', 'pending'].includes(state)) return st;
+    } catch { /* dir or status.json not there yet */ }
+    if (Date.now() > deadline) throw new Error(`timeout waiting for ${asyncDir} (--timeout=<sec>)`);
+    await sleep(2000);
+  }
+}
+
+/** Child answer: the run summary log's `## Summary` body minus the agent header. */
+function runOutput(asyncDir: string, raw: boolean): string {
+  if (!raw) {
+    try {
+      const log = readdirSync(asyncDir).find((f) => /^subagent-log-.*\.md$/.test(f));
+      if (log) {
+        const body = (readFileSync(join(asyncDir, log), 'utf8').split('## Summary')[1] ?? '').split('\n');
+        while (body.length && !body[0].trim()) body.shift();
+        body.shift(); // "<agent>:" header line
+        const out = body.join('\n').trim();
+        if (out) return out;
+      }
+    } catch { /* fall through */ }
+  }
+  try { return readFileSync(join(asyncDir, 'output-0.log'), 'utf8').trim(); } catch { return '(no output artifact found)'; }
+}
+
+function readTask(words: string[]): string {
+  if (words.length === 0 || (words.length === 1 && words[0] === '-')) {
+    if (isatty(0)) throw new Error('no task: pass it as arguments or pipe stdin');
+    return readFileSync(0, 'utf8');
+  }
+  return words.join(' ');
+}
+
+async function main(): Promise<number> {
+  const argv = process.argv.slice(2);
+  let bg = false; let raw = false; let timeoutSec = 1800;
+  const pos: string[] = [];
+  for (const a of argv) {
+    if (a === '-b' || a === '--bg') bg = true;
+    else if (a === '--raw') raw = true;
+    else if (a.startsWith('--timeout=')) timeoutSec = Number(a.slice(10)) || 1800;
+    else pos.push(a);
+  }
+  const [verb, a1] = pos;
+  const needId = (): string => {
+    if (!a1 || !UUID.test(a1)) throw new Error(`expected a run id, got '${a1 ?? ''}'`);
+    return a1;
+  };
+  const msg = (): string => {
+    const m = pos.slice(2).join(' ').trim();
+    if (!m) throw new Error('expected a non-empty message');
+    return m;
+  };
+
+  // control verbs
+  if (verb === 'ping' || verb === 'cost') {
+    const env = await callRpc(verb, {});
+    console.log(JSON.stringify(env.data ?? env, null, 2));
+    return 0;
+  }
+  if (verb === 'status') { const env = await callRpc('status', { runId: needId() }); console.log(JSON.stringify(env.data ?? env, null, 2)); return 0; }
+  if (verb === 'steer') { const env = await callRpc('steer', { runId: needId(), message: msg() }); console.log(JSON.stringify(env.data ?? env, null, 2)); return 0; }
+  if (verb === 'stop') { const env = await callRpc('stop', { runId: needId() }); console.log(JSON.stringify(env.data ?? env, null, 2)); return 0; }
+  if (verb === 'resume') { const env = await callRpc('resume', { runId: needId(), message: msg() }); console.log(JSON.stringify(env.data ?? env, null, 2)); return 0; }
+
+  // run: pi-run [-b] <agent> [task...|-]
+  const agent = verb;
+  if (!agent) { process.stderr.write(`${USAGE}\n`); return 2; }
+  const task = readTask(pos.slice(1));
+  const env = await callRpc('spawn', { agent, task });
+  const { runId, asyncDir } = huntRun(env);
+  if (bg || !runId) {
+    console.log(JSON.stringify(env.data ?? env, null, 2));
+    if (!runId && !bg) process.stderr.write('warning: no runId found in the spawn reply — run may have failed to start\n');
+    return runId || bg ? 0 : 2;
+  }
+  const dir = asyncDir ?? `/tmp/pi-subagents-uid-${process.getuid()}/async-subagent-runs/${runId}`;
+  process.stderr.write(`pi-run: ${agent} → ${runId} (waiting, state poll 2s)\n`);
+  let st: Record<string, unknown>;
+  try { st = await waitTerminal(dir, timeoutSec * 1000); } catch (e) { process.stderr.write(`${(e as Error).message}\n`); return 3; }
+  const state = String(st.state ?? '?');
+  process.stderr.write(`pi-run: ${state}\n`);
+  console.log(runOutput(dir, raw));
+  return state === 'complete' ? 0 : 1;
+}
+
+main().then(
+  (code) => process.exit(code),
+  (e) => { process.stderr.write(`pi-run: ${(e as Error).message}\n\n${USAGE}\n`); process.exit(2); },
+);

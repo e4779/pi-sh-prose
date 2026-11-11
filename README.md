@@ -56,7 +56,27 @@ FABRIC_SOCK был RPC к сервисам движка. Ванильная сб
 `pi.sendUserMessage(..., { expandPromptTemplates: true, deliverAs: 'followUp' })` —
 единственный API-путь, где pi исполняет extension-команды. Дверь к pi-subagents
 (`picmd /run reviewer <task>`, `--bg`, форк, персоны) без тулов и без моста,
-bare-совместимо. Эффекты и дети приходят сообщениями (E2E: oracle, 29с).
+ bare-совместимо. Эффекты и дети приходят сообщениями (E2E: oracle, 29с).
+
+## pi-run — unix-дверь к субагентам
+
+`bin/pi-run` — пайпабельная команда: глагол `{"method","params"}` в сокет
+моста (`PI_TOOLS_SOCK`) → официальный event-bus RPC pi-subagents
+(`subagents:rpc:v1:*`: spawn/steer/status/stop/resume/cost). Arming не нужен —
+шина отвечает с session_start. Блокирующий режим опрашивает
+`asyncDir/status.json` и печатает ответ ребёнка из summary-лога прогона.
+
+```sh
+pi-run researcher < charter.md       # блокирующе: ответ ребёнка в stdout
+pi-run oracle 'скажи: жив'           # задача аргументом
+pi-run -b oracle 'задача'            # фон: JSON-хендл (runId, asyncDir) сразу
+pi-run status|steer|stop|resume <id> # управление прогоном
+pi-run ping                          # capabilities-проба шины
+```
+
+Выходы: 0 complete · 1 failed/stopped · 2 usage/client · 3 timeout.
+E2E (хост `pi --mode rpc`): ping, -b, блокирующий argv+stdin оракл (8–13с),
+status — чисто; регресс pit чист.
 
 ## Установка
 

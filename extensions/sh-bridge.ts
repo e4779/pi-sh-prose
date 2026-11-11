@@ -29,9 +29,15 @@
  *
  * Fail-open: bridge infrastructure errors (socket dir unavailable, listen
  * failure) warn on stderr and disable the socket; they never break a session.
+ *
+ * A third wire verb {"method","params"} forwards to the pi-subagents
+ * event-bus RPC (subagents:rpc:v1:*: spawn/steer/status/stop/resume/cost).
+ * It needs NO arming: the bus answers from session_start. The pi-run CLI
+ * (bin/pi-run) is its shell-side client — the unix door to subagents.
  */
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
+import { randomUUID } from 'node:crypto';
 import { appendFileSync, chmodSync, mkdirSync, unlinkSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
@@ -130,9 +136,47 @@ const runDetached = (job: BgJob, tool: string, args: Record<string, unknown>): v
   });
 };
 
+/** pi-subagents in-process event-bus RPC (subagents:rpc:v1:*). One request
+ * event → one reply event; timeout-guarded, no tools_call arming required. */
+const SUBAGENTS_RPC_REQUEST = 'subagents:rpc:v1:request';
+const SUBAGENTS_RPC_REPLY_PREFIX = 'subagents:rpc:v1:reply:';
+const RPC_TIMEOUT_MS = 30_000;
+
+function subagentsRpc(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const events = piRef?.events;
+  if (!events || typeof events.emit !== 'function' || typeof events.on !== 'function') {
+    return Promise.resolve({ ok: false, error: 'rpc unavailable: pi.events API missing on this host' });
+  }
+  const requestId = randomUUID();
+  return new Promise((resolve) => {
+    const finish = (res: Record<string, unknown>): void => {
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(res);
+    };
+    const timer = setTimeout(
+      () => finish({ ok: false, error: `rpc ${method}: no reply in ${RPC_TIMEOUT_MS}ms — is pi-subagents loaded in this session?` }),
+      RPC_TIMEOUT_MS,
+    );
+    const unsubscribe = events.on(`${SUBAGENTS_RPC_REPLY_PREFIX}${requestId}`, (reply: unknown) => {
+      const r = reply as { success?: boolean; data?: unknown; error?: { code?: string; message?: string } };
+      if (r?.success === true) finish({ ok: true, method, data: r.data ?? null });
+      else finish({ ok: false, method, error: `${r?.error?.code ?? 'error'}: ${r?.error?.message ?? 'no message'}` });
+    });
+    events.emit(SUBAGENTS_RPC_REQUEST, { version: 1, requestId, method, params });
+  });
+}
+
 /** One request line → one response line (the whole wire protocol). */
 async function serveRequest(req: unknown): Promise<Record<string, unknown>> {
   if (req === null || typeof req !== 'object') return { ok: false, error: 'bad request: expected a JSON object' };
+  // RPC verb first: {"method","params"} → pi-subagents event bus (no arming).
+  if (typeof (req as { method?: unknown }).method === 'string' && (req as { tool?: unknown }).tool === undefined) {
+    const { method, params } = req as { method: string; params?: unknown };
+    if (params !== undefined && (typeof params !== 'object' || params === null || Array.isArray(params)))
+      return { ok: false, error: 'bad request: "params" must be a JSON object' };
+    return subagentsRpc(method, (params ?? {}) as Record<string, unknown>);
+  }
   const { tool, args, background } = req as { tool?: unknown; args?: unknown; background?: unknown };
   if (tool === LIST_TOOL) {
     const tools = piRef?.getAllTools() ?? [];
