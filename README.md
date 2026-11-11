@@ -65,8 +65,7 @@ pbus agents cost
 
 Выходы: 0 ok/complete · 1 failed/ok:false · 2 usage/client · 3 timeout.
 E2E (хост `pi --mode rpc`): computed help, list, rpc ping, spawn argv+stdin
-(10–24с), стабы pit/pi-run (exit 2), проектные персоны в листинге — чисто.
-`pit`/`pi-run` — stderr-стабы ≤2 недель (подскажут новое имя).
+(10–24с), проектные персоны в листинге — чисто.
 
 ## Установка
 
@@ -79,6 +78,24 @@ pi -ne -e ../pi-sh-tool -p '...'
 Требуются peer-зависимости хоста: `@earendil-works/pi-coding-agent`,
 `@earendil-works/pi-tui`, `typebox`. Built-ins отключаются через
 `defaultTools: []` (user-level settings).
+
+## Документация и скиллы
+
+- `AGENTS.md` — рабочий контракт модели в контуре (prose-договор, ground rules).
+- `.agents/skills/shell-prose/SKILL.md` — полный контракт prose-исполнения.
+- `.agents/skills/workflow-sh/SKILL.md` — фан-аут воркеров (`pbus agents spawn`)
+  одним проверенным sh-скриптом + adversarial verify.
+- `.agents/skills/rlm-sh/SKILL.md` — рекурсивная декомпозиция больших корпусов.
+- `.pi/agent-env.sh` — per-project `BASH_ENV`: PATH-контекст для каждого
+  спавна шелла (подхватывается `extensions/shell-exec.ts`, телеметрия —
+  `.pi/calls.jsonl`, gitignored).
+
+## Разработка
+
+```sh
+bun test                 # 206 тестов (порт лабораторного сьюта)
+bin/verify-then-commit -- <git-args>   # зелёный сьют как гейт коммита
+```
 
 ## Проверка
 
