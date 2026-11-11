@@ -11,11 +11,11 @@
  * deferred/callable tools stay reachable where a tool context exists.
  *
  * Modes:
- * - default          — zero declared tools ONCE WARM: pi 1.5.0 exposes
- *                      executeTool only inside a tool execute, so while the pit
- *                      bridge is cold the run declares exactly one anchor,
- *                      `tools_call`, plus a one-line warmup instruction riding
- *                      the always-cold first turn; armed → strict zero again.
+ * - default (bare)   — zero declared tools from the FIRST run: no anchor,
+ *                      no warmup; the bridge stays cold (memory is shell-side
+ *                      via pi-recall; nothing in this contour needs pit).
+ * - PI_SH_WARM=1     — cold-start anchor + one-line warmup riding the first
+ *                      turn, then strict zero again (sessions that need pit).
  * - PI_SH_PIT_ARM=1  — declare `tools_call` on every run (always-callable pit).
  * - PI_SH_TOOL_KEEP_SURFACE=1 — no reduction; surface stays whatever
  *                      settings/CLI selected (mixed contour).
@@ -41,6 +41,7 @@ const CONTRACT = [
   'Registered tools are reachable from the shell side:',
   '- pit list — every registered tool, one line each',
   '- pit describe <tool> — full parameters (names, types, enums, descriptions)',
+  'picmd: first line `picmd /<command> <args>` dispatches an extension command in-process (e.g. `picmd /run reviewer <task>` delegates to pi-subagents) — the block never reaches bash; effects and child agents arrive as messages.',
 ].join('\n');
 
 /** Rides the always-cold first turn: pi 1.5.0 exposes executeTool only inside a tool execute, so until some tools_call runs, the bridge cannot serve pit call. */

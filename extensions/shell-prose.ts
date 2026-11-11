@@ -1354,7 +1354,7 @@ export const PROSE_CALLS_LOG = join(homedir(), '.pi', 'agent', 'prose-calls.json
 
 export interface ProseCallEvent {
   /** 'bg': the block detached (hang race lost or `# bg`) — the child runs on as a bg job. */
-  kind: 'executed' | 'bg' | 'format_error' | 'latch' | 'warn' | 'img';
+  kind: 'executed' | 'bg' | 'format_error' | 'latch' | 'warn' | 'img' | 'picmd';
   blockHead?: string;
   exit?: number | null;
   ms?: number;
@@ -1594,6 +1594,32 @@ export default function (pi: ExtensionAPI) {
     }
 
     const { block } = ex;
+
+    // picmd: first code line dispatches an extension command in-process —
+    // the block never reaches bash. Raw remainder goes verbatim to
+    // sendUserMessage with expandPromptTemplates (the only API path where
+    // extension commands run; docs "Input processing"), queued as followUp
+    // until this run settles. Effects and children arrive as messages.
+    const pc = /^picmd[ \t]+(\/.+)$/.exec((block.code.split('\n')[0] ?? '').trim());
+    if (pc) {
+      const text = pc[1].trim();
+      const round = beginRound(limits);
+      if (!round.ok) return append(pausedMsg(round.reason), false);
+      writeProseCall({ kind: 'picmd', blockHead: `picmd ${text}`, detail: 'extension command dispatched (no bash)' });
+      pi.sendUserMessage(text, { expandPromptTemplates: true, deliverAs: 'followUp' });
+      return {
+        entries: [
+          ...prevEntries,
+          {
+            type: 'custom_message' as const,
+            customType: CUSTOM_TYPE,
+            content: `[picmd] dispatched → ${text} (extension command; its effects/children arrive as messages)`,
+            display: true,
+            details: { kind: 'picmd' as const, text },
+          },
+        ],
+      };
+    }
 
     // `# bg` is ACCEPTED: the flag line was already stripped by parseFlags and
     // runBlock detaches at spawn (same card, id assigned at once).
