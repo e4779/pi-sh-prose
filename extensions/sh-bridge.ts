@@ -258,6 +258,14 @@ export default function (pi: ExtensionAPI) {
         }
         return;
       }
+      if (process.env.PI_SH_BARE === '1') {
+        try {
+          ctx.ui?.notify?.('bare contour: bridge stays cold by design (PI_SH_BARE) — spawn without it to use pit', 'info');
+        } catch {
+          /* cosmetic */
+        }
+        return;
+      }
       // Same delivery channel as bg-wake (sendLocalWake in shell-bg):
       // invisible to the operator, still read by the model, triggers the turn.
       pi.sendMessage(
