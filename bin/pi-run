@@ -1,4 +1,0 @@
-#!/bin/sh
-# pi-run is now 'pbus agents spawn' (stderr stub, remove after 2026-11-25)
-echo "pi-run is now: pbus agents spawn <agent> [task|-]   (PI_BUS_SOCK bus)" >&2
-exit 2

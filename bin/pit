@@ -1,4 +1,0 @@
-#!/bin/sh
-# pit is now pbus — one client, one bus (stderr stub, remove after 2026-11-25)
-echo "pit is now pbus — same socket, one client: PI_BUS_SOCK + 'pbus call …'" >&2
-exit 2
