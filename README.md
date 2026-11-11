@@ -50,14 +50,6 @@ FABRIC_SOCK был RPC к сервисам движка. Ванильная сб
 могут делегировать так же. `pi -p` сам по себе — one-shot «новый сеанс с
 нуля», субагентом он не является.
 
-## picmd — extension commands from sh blocks
-
-Первая строка блока `picmd /<command> <args>` не попадает в bash: остаток уходит в
-`pi.sendUserMessage(..., { expandPromptTemplates: true, deliverAs: 'followUp' })` —
-единственный API-путь, где pi исполняет extension-команды. Дверь к pi-subagents
-(`picmd /run reviewer <task>`, `--bg`, форк, персоны) без тулов и без моста,
- bare-совместимо. Эффекты и дети приходят сообщениями (E2E: oracle, 29с).
-
 ## pi-run — unix-дверь к субагентам
 
 `bin/pi-run` — пайпабельная команда: глагол `{"method","params"}` в сокет

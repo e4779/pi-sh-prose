@@ -41,7 +41,6 @@ const CONTRACT = [
   'Registered tools are reachable from the shell side:',
   '- pit list — every registered tool, one line each',
   '- pit describe <tool> — full parameters (names, types, enums, descriptions)',
-  'picmd: first line `picmd /<command> <args>` dispatches an extension command in-process (e.g. `picmd /run reviewer <task>` delegates to pi-subagents) — the block never reaches bash; effects and child agents arrive as messages.',
 ].join('\n');
 
 /** Rides the always-cold first turn: pi 1.5.0 exposes executeTool only inside a tool execute, so until some tools_call runs, the bridge cannot serve pit call. */
