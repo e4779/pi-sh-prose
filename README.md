@@ -1,4 +1,4 @@
-# pi-sh-tool
+# pi-sh-prose
 
 Shell-контур для ванильного pi **без pi-fabric**: prose-контракт исполнения
 (four-backtick `sh` блок последним в сообщении), auto-detach долгих команд в
@@ -70,9 +70,9 @@ E2E (хост `pi --mode rpc`): computed help, list, rpc ping, spawn argv+stdin
 ## Установка
 
 ```sh
-pi install -l ../pi-sh-tool        # проектно (после grant trust)
+pi install -l ../pi-sh-prose        # проектно (после grant trust)
 # или разово:
-pi -ne -e ../pi-sh-tool -p '...'
+pi -ne -e ../pi-sh-prose -p '...'
 ```
 
 Требуются peer-зависимости хоста: `@earendil-works/pi-coding-agent`,

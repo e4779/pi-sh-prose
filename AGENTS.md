@@ -1,4 +1,4 @@
-# pi-sh-tool — shell contour
+# pi-sh-prose — shell contour
 
 The model surface here is (at most) ONE tool: `shell`. Everything else —
 file reading, search, agents, MCP, memory — is a command.
